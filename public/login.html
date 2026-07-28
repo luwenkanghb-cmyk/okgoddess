@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>后台登录</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,sans-serif;background:#f5f7fa;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{width:100%;max-width:360px;background:#fff;padding:28px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.08)}
+h1{margin:0 0 24px;font-size:20px;text-align:center;color:#1a1a1a}
+input{width:100%;padding:14px 16px;border:1px solid #e5e7eb;border-radius:10px;font-size:16px;margin-bottom:16px;outline:none}
+input:focus{border-color:#2563eb}
+button{width:100%;padding:14px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer}
+button:active{transform:scale(.98)}
+.msg{margin-top:12px;text-align:center;font-size:14px;min-height:20px}
+.err{color:#dc2626}.ok{color:#059669}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔐 管理后台登录</h1>
+  <input id="pwd" type="password" placeholder="请输入管理员密码">
+  <button onclick="login()">登 录</button>
+  <div id="msg" class="msg"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+async function login(){
+  const p=$('pwd').value;if(!p)return show('请输入密码','err');
+  const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+  const d=await r.json();
+  if(d.code===0){localStorage.setItem('adminSid',d.sid);location.href='/dashboard.html'}
+  else show(d.msg||'登录失败','err');
+}
+function show(t,c){const m=$('msg');m.textContent=t;m.className='msg '+c}
+$('pwd').addEventListener('keydown',e=>e.key==='Enter'&&login());
+</script>
+</body>
+</html>
