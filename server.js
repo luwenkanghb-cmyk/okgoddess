@@ -1,29 +1,27 @@
 require('dotenv').config();
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const JavaScriptObfuscator = require('javascript-obfuscator');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SALT = process.env.SALT || 'namco_default_salt_2026';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
-// ========== 初始化数据库 ==========
+// 初始化数据库
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const NONCE_FILE = path.join(DATA_DIR, 'nonces.json');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, '[]');
 if (!fs.existsSync(NONCE_FILE)) fs.writeFileSync(NONCE_FILE, '{}');
-const readUsers = () => JSON.parse(fs.readFileSync(USERS_FILE));
+const readUsers = () => { try { return JSON.parse(fs.readFileSync(USERS_FILE)) } catch { return [] } };
 const writeUsers = (d) => fs.writeFileSync(USERS_FILE, JSON.stringify(d, null, 2));
-const readNonces = () => JSON.parse(fs.readFileSync(NONCE_FILE));
+const readNonces = () => { try { return JSON.parse(fs.readFileSync(NONCE_FILE)) } catch { return {} } };
 const writeNonces = (d) => fs.writeFileSync(NONCE_FILE, JSON.stringify(d));
 
-// ========== 工具函数 ==========
+// 工具函数
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const hmac256 = (k, s) => crypto.createHmac('sha256', k).update(s).digest('hex');
 const aesEncrypt = (text, keyHex) => {
@@ -35,9 +33,9 @@ const aesEncrypt = (text, keyHex) => {
   return iv.toString('base64') + '.' + ct.toString('base64') + '.' + tag.toString('base64');
 };
 const randomId = (n) => crypto.randomBytes(n).toString('hex');
-const sessions = {}; // 管理员登录会话
+const sessions = {};
 
-// ========== 页面配置（原脚本硬编码参数移到这里） ==========
+// 页面配置
 const PAGE_CONFIG = {
   matchUrls: [
     'https://parks2.bandainamco-am.co.jp/top_login.html',
@@ -53,7 +51,7 @@ const PAGE_CONFIG = {
   lockEvents: ['input','change','blur']
 };
 
-// ========== 核心脚本模板（原脚本100%逻辑，后端动态渲染） ==========
+// 核心脚本生成（和原来功能100%一样，只是去掉了混淆）
 function generateCoreScript(userEmail) {
   return `
 (function(){
@@ -118,69 +116,40 @@ function generateCoreScript(userEmail) {
 })();`;
 }
 
-// ========== 混淆 + 加密 ==========
-async function obfuscateAndEncrypt(jsCode, appSecret, ts) {
-  // 1. 混淆
-  const obResult = JavaScriptObfuscator.obfuscate(jsCode, {
-    compact: true,
-    controlFlowFlattening: true,
-    controlFlowFlatteningThreshold: 0.8,
-    stringArray: true,
-    stringArrayEncoding: ['rc4'],
-    stringArrayThreshold: 1,
-    deadCodeInjection: true,
-    deadCodeInjectionThreshold: 0.3,
-    identifierNamesGenerator: 'hexadecimal',
-    renameGlobals: true,
-    selfDefending: true,
-    disableConsoleOutput: false
-  });
-  const obCode = obResult.getObfuscatedCode();
-  
-  // 2. 加过期时间（10分钟）
+// 轻量加密（去掉大依赖混淆，Render免费版100%能跑）
+async function encryptScript(jsCode, appSecretHash, ts) {
   const expireAt = Date.now() + 10 * 60 * 1000;
-  const finalCode = expireAt.toString().padStart(13,'0') + obCode;
-  
-  // 3. AES加密
+  const finalCode = expireAt.toString().padStart(13,'0') + jsCode;
   const keyId = randomId(8);
-  const derivedKey = hmac256(appSecret + SALT, keyId + ts);
+  const derivedKey = hmac256(appSecretHash + SALT, keyId + ts);
   const encrypted = aesEncrypt(finalCode, derivedKey);
-  
   return { keyId, encryptedScript: encrypted };
 }
 
-// ========== 中间件 ==========
+// 中间件
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static('public'));
 
-// 权限校验中间件
+// 权限校验
 function verifyAuth(req, res, next) {
   try {
     const { appKey, timestamp, nonce, sign, deviceFingerprint, lockEmail } = req.body;
     if (!appKey || !timestamp || !nonce || !sign || !deviceFingerprint) return res.json({ code: 400, msg: '参数缺失' });
-    
-    // 时间戳校验 ±30秒
     if (Math.abs(Date.now() - parseInt(timestamp)) > 30000) return res.json({ code: 401, msg: '请求过期' });
     
-    // Nonce 防重放
     const nonces = readNonces();
     if (nonces[nonce]) return res.json({ code: 401, msg: '非法请求' });
     nonces[nonce] = Date.now();
     Object.keys(nonces).forEach(k => { if (Date.now() - nonces[k] > 60000) delete nonces[k]; });
     writeNonces(nonces);
     
-    // 查用户
     const users = readUsers();
     const user = users.find(u => u.appKey === appKey && u.active);
     if (!user) return res.json({ code: 403, msg: '密钥无效' });
     
-    // 校验签名
     const signMsg = [appKey, timestamp, nonce, deviceFingerprint, lockEmail].join('|');
     const expectSign = hmac256(user.appSecretHash + SALT, signMsg);
     if (sign !== expectSign) return res.json({ code: 403, msg: '签名错误' });
-    
-    // 设备绑定校验（可选，注释掉就是不绑定）
-    // if (user.deviceFp && user.deviceFp !== deviceFingerprint) return res.json({ code: 403, msg: '设备不匹配' });
     
     req.user = user;
     next();
@@ -189,14 +158,12 @@ function verifyAuth(req, res, next) {
   }
 }
 
-// ========== 接口 ==========
-// 获取核心脚本（油猴调用）
+// 接口
 app.post('/api/v1/get', verifyAuth, async (req, res) => {
   try {
     const { lockEmail, timestamp } = req.body;
     const core = generateCoreScript(lockEmail);
-    const result = await obfuscateAndEncrypt(core, req.user.appSecretHash, timestamp);
-    // 更新调用记录
+    const result = await encryptScript(core, req.user.appSecretHash, timestamp);
     const users = readUsers();
     const idx = users.findIndex(u => u.appKey === req.user.appKey);
     if (idx >= 0) {
@@ -210,7 +177,6 @@ app.post('/api/v1/get', verifyAuth, async (req, res) => {
   }
 });
 
-// 管理员登录
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
@@ -222,40 +188,37 @@ app.post('/api/admin/login', (req, res) => {
   }
 });
 
-// 管理员中间件
 function adminAuth(req, res, next) {
   const sid = req.headers['x-admin-sid'];
   if (sid && sessions[sid] && sessions[sid] > Date.now()) next();
   else res.json({ code: 401, msg: '请先登录' });
 }
 
-// 获取用户列表
 app.get('/api/admin/users', adminAuth, (req, res) => {
-  const users = readUsers().map(u => ({
-    ...u,
-    appSecretHash: undefined, // 绝不返回密钥哈希
-    appSecret: undefined
-  }));
+  const users = readUsers().map(u => ({ ...u, appSecretHash: undefined, appSecret: undefined }));
   res.json({ code: 0, data: users });
 });
 
-// 新增用户（返回仅一次的AppSecret）
+// 生成密钥接口（重点修复）
 app.post('/api/admin/users', adminAuth, (req, res) => {
-  const { remark } = req.body;
-  const appKey = randomId(8);
-  const appSecret = randomId(16); // 仅这次返回明文
-  const appSecretHash = sha256(appSecret);
-  const users = readUsers();
-  users.push({
-    appKey, appSecretHash, remark: remark || '未命名用户',
-    active: true, createdAt: new Date().toISOString(),
-    lastUsed: null, callCount: 0, deviceFp: null
-  });
-  writeUsers(users);
-  res.json({ code: 0, data: { appKey, appSecret, remark } });
+  try {
+    const { remark } = req.body || {};
+    const appKey = randomId(8);
+    const appSecret = randomId(16); // 明文只返回一次
+    const appSecretHash = sha256(appSecret);
+    const users = readUsers();
+    users.push({
+      appKey, appSecretHash, remark: remark || '未命名用户',
+      active: true, createdAt: new Date().toISOString(),
+      lastUsed: null, callCount: 0, deviceFp: null
+    });
+    writeUsers(users);
+    res.json({ code: 0, data: { appKey, appSecret, remark: remark || '未命名用户' } });
+  } catch (e) {
+    res.json({ code: 500, msg: '生成失败：' + e.message });
+  }
 });
 
-// 切换启用/吊销
 app.post('/api/admin/users/:key/toggle', adminAuth, (req, res) => {
   const users = readUsers();
   const u = users.find(x => x.appKey === req.params.key);
@@ -265,7 +228,6 @@ app.post('/api/admin/users/:key/toggle', adminAuth, (req, res) => {
   res.json({ code: 0 });
 });
 
-// 删除用户
 app.delete('/api/admin/users/:key', adminAuth, (req, res) => {
   let users = readUsers();
   users = users.filter(x => x.appKey !== req.params.key);
@@ -273,7 +235,6 @@ app.delete('/api/admin/users/:key', adminAuth, (req, res) => {
   res.json({ code: 0 });
 });
 
-// 健康检查
 app.get('/health', (req, res) => res.send('OK'));
 
 app.listen(PORT, () => console.log('服务运行在端口 ' + PORT));
