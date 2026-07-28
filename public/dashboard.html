@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>密钥管理</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,sans-serif;background:#f5f7fa;padding:16px;max-width:600px;margin:0 auto}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+h1{margin:0;font-size:20px}
+.btn{padding:10px 16px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer}
+.btn-primary{background:#2563eb;color:#fff}.btn-danger{background:#dc2626;color:#fff}
+.btn-gray{background:#e5e7eb;color:#374151}.btn-green{background:#059669;color:#fff}
+.add-box{background:#fff;padding:16px;border-radius:14px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.add-box input{width:100%;padding:12px;border:1px solid #e5e7eb;border-radius:10px;font-size:15px;margin-bottom:10px;outline:none}
+.card{background:#fff;padding:16px;border-radius:14px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:14px}
+.label{color:#6b7280;width:80px;flex-shrink:0}.val{flex:1;word-break:break-all;font-family:monospace;font-size:13px}
+.tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:600}
+.tag-on{background:#d1fae5;color:#065f46}.tag-off{background:#fee2e2;color:#991b1b}
+.actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.new-key{background:#f0fdf4;border:1px solid #86efac;padding:12px;border-radius:10px;margin:10px 0}
+.new-key p{margin:4px 0;font-size:13px;color:#166534}
+.warn{background:#fffbeb;border:1px solid #fcd34d;padding:10px;border-radius:10px;font-size:12px;color:#92400e;margin:10px 0}
+.empty{text-align:center;padding:40px;color:#9ca3af}
+.copy{background:none;border:none;color:#2563eb;font-size:12px;cursor:pointer;padding:0 4px}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>🔑 密钥管理</h1>
+  <button class="btn btn-gray" onclick="logout()">退出</button>
+</div>
+
+<div class="add-box">
+  <input id="remark" placeholder="备注（比如：我的手机、老婆的号）">
+  <button class="btn btn-primary" style="width:100%" onclick="addUser()">➕ 生成新密钥</button>
+</div>
+
+<div id="list"></div>
+
+<script>
+const SID=localStorage.getItem('adminSid');
+if(!SID)location.href='/login.html';
+const H={'Content-Type':'application/json','X-Admin-Sid':SID};
+
+async function load(){
+  const r=await fetch('/api/admin/users',{headers:H});
+  const d=await r.json();if(d.code===401){localStorage.removeItem('adminSid');location.href='/login.html'}
+  const list=$('list');
+  if(!d.data.length){list.innerHTML='<div class="empty">还没有密钥，点上面按钮生成第一个</div>';return}
+  list.innerHTML=d.data.map(u=>`
+    <div class="card">
+      <div class="row"><span class="label">备注</span><strong class="val">${u.remark||'未命名'}</strong></div>
+      <div class="row"><span class="label">状态</span><span class="tag ${u.active?'tag-on':'tag-off'}">${u.active?'✅ 启用中':'❌ 已吊销'}</span></div>
+      <div class="row"><span class="label">AppKey</span><span class="val">${u.appKey}</span></div>
+      <div class="row"><span class="label">调用</span><span class="val">${u.callCount||0} 次 · 最后：${u.lastUsed?new Date(u.lastUsed).toLocaleString('zh-CN'):'从未'}</span></div>
+      <div class="row"><span class="label">创建</span><span class="val">${new Date(u.createdAt).toLocaleString('zh-CN')}</span></div>
+      <div class="actions">
+        <button class="btn ${u.active?'btn-danger':'btn-green'}" onclick="toggle('${u.appKey}')">${u.active?'🔒 吊销':'🔓 启用'}</button>
+        <button class="btn btn-gray" onclick="del('${u.appKey}')">🗑 删除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function addUser(){
+  const remark=$('remark').value.trim();
+  const r=await fetch('/api/admin/users',{method:'POST',headers:H,body:JSON.stringify({remark})});
+  const d=await r.json();if(d.code!==0)return alert('失败');
+  const k=d.data;
+  const div=document.createElement('div');
+  div.className='card';
+  div.innerHTML=`
+    <div class="new-key">
+      <p><strong>⚠️ 密钥只显示这一次！立刻复制保存好！</strong></p>
+      <p>📝 备注：${k.remark||'未命名'}</p>
+      <p>AppKey：<code>${k.appKey}</code> <button class="copy" onclick="navigator.clipboard.writeText('${k.appKey}')">复制</button></p>
+      <p>AppSecret：<code>${k.appSecret}</code> <button class="copy" onclick="navigator.clipboard.writeText('${k.appSecret}')">复制</button></p>
+    </div>
+    <div class="warn">💡 打开手机油猴脚本，把这两个值粘贴进去，然后刷新登录页即可生效</div>`;
+  $('list').insertBefore(div,$('list').firstChild);
+  $('remark').value='';
+  load();
+}
+
+async function toggle(k){await fetch('/api/admin/users/'+k+'/toggle',{method:'POST',headers:H});load()}
+async function del(k){if(!confirm('确定删除？此操作不可恢复'))return;await fetch('/api/admin/users/'+k,{method:'DELETE',headers:H});load()}
+function logout(){localStorage.removeItem('adminSid');location.href='/login.html'}
+load();
+</script>
+</body>
+</html>
